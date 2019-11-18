@@ -8,7 +8,9 @@ jobs:
     steps:
       -
         name: Install PulseAudio Library and Headers
-        run: apt-get install -y libpulse-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse-dev
       -
         name: Build
         run: |
