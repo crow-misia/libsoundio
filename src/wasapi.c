@@ -30,26 +30,10 @@
 #define E_NOTFOUND 0x80070490
 #endif //E_NOTFOUND
 
-#ifdef __cplusplus
-// In C++ mode, IsEqualGUID() takes its arguments by reference
-#define IS_EQUAL_GUID(a, b) IsEqualGUID(*(a), *(b))
-#define IS_EQUAL_IID(a, b) IsEqualIID((a), *(b))
-
-// And some constants are passed by reference
-#define IID_IAUDIOCLIENT                      (IID_IAudioClient)
-#define IID_IMMENDPOINT                       (IID_IMMEndpoint)
-#define IID_IAUDIOCLOCKADJUSTMENT             (IID_IAudioClockAdjustment)
-#define IID_IAUDIOSESSIONCONTROL              (IID_IAudioSessionControl)
-#define IID_IAUDIORENDERCLIENT                (IID_IAudioRenderClient)
-#define IID_IMMDEVICEENUMERATOR               (IID_IMMDeviceEnumerator)
-#define IID_IAUDIOCAPTURECLIENT               (IID_IAudioCaptureClient)
-#define IID_ISIMPLEAUDIOVOLUME                (IID_ISimpleAudioVolume)
-#define CLSID_MMDEVICEENUMERATOR              (CLSID_MMDeviceEnumerator)
-#define PKEY_DEVICE_FRIENDLYNAME              (PKEY_Device_FriendlyName)
-#define PKEY_AUDIOENGINE_DEVICEFORMAT         (PKEY_AudioEngine_DeviceFormat)
-
 // And some GUID are never implemented (Ignoring the INITGUID define)
-static const CLSID CLSID_MMDeviceEnumerator  = __uuidof(MMDeviceEnumerator);
+static const CLSID CLSID_MMDeviceEnumerator = {
+    0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}
+};
 static const IID   IID_IMMDeviceEnumerator   = {
     //MIDL_INTERFACE("A95664D2-9614-4F35-A746-DE8DB63617E6")
     0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}
@@ -90,6 +74,24 @@ static const IID IID_ISimpleAudioVolume = {
     //MIDL_INTERFACE("87ce5498-68d6-44e5-9215-6da47ef883d8")
     0x87ce5498, 0x68d6, 0x44e5,{ 0x92, 0x15, 0x6d, 0xa4, 0x7e, 0xf8, 0x83, 0xd8 }
 };
+
+#ifdef __cplusplus
+// In C++ mode, IsEqualGUID() takes its arguments by reference
+#define IS_EQUAL_GUID(a, b) IsEqualGUID(*(a), *(b))
+#define IS_EQUAL_IID(a, b) IsEqualIID((a), *(b))
+
+// And some constants are passed by reference
+#define IID_IAUDIOCLIENT                      (IID_IAudioClient)
+#define IID_IMMENDPOINT                       (IID_IMMEndpoint)
+#define IID_IAUDIOCLOCKADJUSTMENT             (IID_IAudioClockAdjustment)
+#define IID_IAUDIOSESSIONCONTROL              (IID_IAudioSessionControl)
+#define IID_IAUDIORENDERCLIENT                (IID_IAudioRenderClient)
+#define IID_IMMDEVICEENUMERATOR               (IID_IMMDeviceEnumerator)
+#define IID_IAUDIOCAPTURECLIENT               (IID_IAudioCaptureClient)
+#define IID_ISIMPLEAUDIOVOLUME                (IID_ISimpleAudioVolume)
+#define CLSID_MMDEVICEENUMERATOR              (CLSID_MMDeviceEnumerator)
+#define PKEY_DEVICE_FRIENDLYNAME              (PKEY_Device_FriendlyName)
+#define PKEY_AUDIOENGINE_DEVICEFORMAT         (PKEY_AudioEngine_DeviceFormat)
 
 #else
 #define IS_EQUAL_GUID(a, b) IsEqualGUID((a), (b))
@@ -486,10 +488,16 @@ static void deinit_refresh_devices(struct RefreshDevices *rd) {
     soundio_device_unref(rd->device_raw);
     if (rd->mm_device)
         IMMDevice_Release(rd->mm_device);
-    if (rd->default_render_device)
-        IMMDevice_Release(rd->default_render_device);
+	if (rd->default_render_device)
+	{
+		IMMDevice_Release(rd->default_render_device);
+		free(rd->default_render_id);
+	}
     if (rd->default_capture_device)
+    {
         IMMDevice_Release(rd->default_capture_device);
+        free(rd->default_capture_id);
+    }
     if (rd->collection)
         IMMDeviceCollection_Release(rd->collection);
     if (rd->lpwstr)
@@ -1273,9 +1281,10 @@ static int outstream_do_open(struct SoundIoPrivate *si, struct SoundIoOutStreamP
         CoTaskMemFree(mix_format);
         mix_format = NULL;
         flags = osw->need_resample ? AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY : 0;
+        flags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
         share_mode = AUDCLNT_SHAREMODE_SHARED;
         periodicity = 0;
-        buffer_duration = to_reference_time(4.0);
+        buffer_duration = to_reference_time(outstream->software_latency);
     }
     to_wave_format_layout(&outstream->layout, &wave_format);
     to_wave_format_format(outstream->format, &wave_format);
@@ -1305,6 +1314,7 @@ static int outstream_do_open(struct SoundIoPrivate *si, struct SoundIoOutStreamP
                 CoTaskMemFree(mix_format);
                 mix_format = NULL;
                 flags = osw->need_resample ? AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY : 0;
+                flags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
                 to_wave_format_layout(&outstream->layout, &wave_format);
                 to_wave_format_format(outstream->format, &wave_format);
                 complete_wave_format_data(&wave_format);
@@ -1345,10 +1355,8 @@ static int outstream_do_open(struct SoundIoPrivate *si, struct SoundIoOutStreamP
     }
     outstream->software_latency = osw->buffer_frame_count / (double)outstream->sample_rate;
 
-    if (osw->is_raw) {
-        if (FAILED(hr = IAudioClient_SetEventHandle(osw->audio_client, osw->h_event))) {
-            return SoundIoErrorOpeningDevice;
-        }
+    if (FAILED(hr = IAudioClient_SetEventHandle(osw->audio_client, osw->h_event))) {
+        return SoundIoErrorOpeningDevice;
     }
 
     if (outstream->name) {
@@ -1400,13 +1408,13 @@ static void outstream_shared_run(struct SoundIoOutStreamPrivate *os) {
         outstream->error_callback(outstream, SoundIoErrorStreaming);
         return;
     }
-    osw->writable_frame_count = osw->buffer_frame_count - frames_used;
-    if (osw->writable_frame_count <= 0) {
+    int writable_frame_count = osw->buffer_frame_count - frames_used;
+    if (writable_frame_count <= 0) {
         outstream->error_callback(outstream, SoundIoErrorStreaming);
         return;
     }
     int frame_count_min = soundio_int_max(0, (int)osw->min_padding_frames - (int)frames_used);
-    outstream->write_callback(outstream, frame_count_min, osw->writable_frame_count);
+    outstream->write_callback(outstream, frame_count_min, writable_frame_count);
 
     if (FAILED(hr = IAudioClient_Start(osw->audio_client))) {
         outstream->error_callback(outstream, SoundIoErrorStreaming);
@@ -1414,20 +1422,8 @@ static void outstream_shared_run(struct SoundIoOutStreamPrivate *os) {
     }
 
     for (;;) {
-        if (FAILED(hr = IAudioClient_GetCurrentPadding(osw->audio_client, &frames_used))) {
-            outstream->error_callback(outstream, SoundIoErrorStreaming);
+        if (!SOUNDIO_ATOMIC_FLAG_TEST_AND_SET(osw->thread_exit_flag))
             return;
-        }
-        osw->writable_frame_count = osw->buffer_frame_count - frames_used;
-        double time_until_underrun = frames_used / (double)outstream->sample_rate;
-        double wait_time = time_until_underrun / 2.0;
-        soundio_os_mutex_lock(osw->mutex);
-        soundio_os_cond_timed_wait(osw->cond, osw->mutex, wait_time);
-        if (!SOUNDIO_ATOMIC_FLAG_TEST_AND_SET(osw->thread_exit_flag)) {
-            soundio_os_mutex_unlock(osw->mutex);
-            return;
-        }
-        soundio_os_mutex_unlock(osw->mutex);
         bool reset_buffer = false;
         if (!SOUNDIO_ATOMIC_FLAG_TEST_AND_SET(osw->clear_buffer_flag)) {
             if (!osw->is_paused) {
@@ -1465,12 +1461,12 @@ static void outstream_shared_run(struct SoundIoOutStreamPrivate *os) {
             outstream->error_callback(outstream, SoundIoErrorStreaming);
             return;
         }
-        osw->writable_frame_count = osw->buffer_frame_count - frames_used;
-        if (osw->writable_frame_count > 0) {
+        int writable_frame_count = osw->buffer_frame_count - frames_used;
+        if (writable_frame_count > 0) {
             if (frames_used == 0 && !reset_buffer)
                 outstream->underflow_callback(outstream);
             int frame_count_min = soundio_int_max(0, (int)osw->min_padding_frames - (int)frames_used);
-            outstream->write_callback(outstream, frame_count_min, osw->writable_frame_count);
+            outstream->write_callback(outstream, frame_count_min, writable_frame_count);
         }
     }
 }
@@ -1590,12 +1586,10 @@ static int outstream_open_wasapi(struct SoundIoPrivate *si, struct SoundIoOutStr
         return SoundIoErrorNoMem;
     }
 
-    if (osw->is_raw) {
-        osw->h_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-        if (!osw->h_event) {
-            outstream_destroy_wasapi(si, os);
-            return SoundIoErrorOpeningDevice;
-        }
+    osw->h_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!osw->h_event) {
+        outstream_destroy_wasapi(si, os);
+        return SoundIoErrorOpeningDevice;
     }
 
     SOUNDIO_ATOMIC_FLAG_TEST_AND_SET(osw->thread_exit_flag);
@@ -1625,13 +1619,7 @@ static int outstream_pause_wasapi(struct SoundIoPrivate *si, struct SoundIoOutSt
 
     SOUNDIO_ATOMIC_STORE(osw->desired_pause_state, pause);
     SOUNDIO_ATOMIC_FLAG_CLEAR(osw->pause_resume_flag);
-    if (osw->h_event) {
-        SetEvent(osw->h_event);
-    } else {
-        soundio_os_mutex_lock(osw->mutex);
-        soundio_os_cond_signal(osw->cond, osw->mutex);
-        soundio_os_mutex_unlock(osw->mutex);
-    }
+    SetEvent(osw->h_event);
 
     return 0;
 }
@@ -1686,13 +1674,11 @@ static int outstream_end_write_wasapi(struct SoundIoPrivate *si, struct SoundIoO
 static int outstream_clear_buffer_wasapi(struct SoundIoPrivate *si, struct SoundIoOutStreamPrivate *os) {
     struct SoundIoOutStreamWasapi *osw = &os->backend_data.wasapi;
 
-    if (osw->h_event) {
+    if (osw->is_raw) {
         return SoundIoErrorIncompatibleDevice;
     } else {
         SOUNDIO_ATOMIC_FLAG_CLEAR(osw->clear_buffer_flag);
-        soundio_os_mutex_lock(osw->mutex);
-        soundio_os_cond_signal(osw->cond, osw->mutex);
-        soundio_os_mutex_unlock(osw->mutex);
+        SetEvent(osw->h_event);
     }
 
     return 0;
